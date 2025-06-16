@@ -11,7 +11,4 @@ python_compile = false
 python_venv_auto_create = true
 
 [tasks.setup]
-run = [
-  "mise install",
-  "mise x -- ./dev_setup.py",
-]
+run = "./dev_setup.py"

@@ -5,7 +5,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 # GENERAL BUILD / DEPENDENCY STRATEGY
@@ -17,8 +16,7 @@ from pathlib import Path
 def run_shell(*av, **kw):
     av = [str(a) for a in av]
     print(f"🐚 {shlex.join(av)}")
-    if av[:1] != ["mise"]:
-        av = ["mise", "exec", "--", *av]
+    if av[:1] != ["mise"]: av = ["mise", "exec", "--", *av]
     return subprocess.run(av, **{"check": True, **kw})
 
 parser = argparse.ArgumentParser(description="Nutrimatic dev environment setup")
@@ -26,6 +24,7 @@ parser.add_argument("--clean", action="store_true", help="Wipe build dir first")
 parser.add_argument("--debug", action="store_true", help="Debug build for deps")
 args = parser.parse_args()
 
+os.environ["IN_DEV_SETUP"] = "1"
 top_dir = Path(__file__).resolve().parent
 os.chdir(top_dir)
 
@@ -38,7 +37,7 @@ if args.clean:
 print(f"\n➡️ Mise (tool manager) setup")
 if not shutil.which("mise"):
     print("🚨 Please install 'mise' (https://mise.jdx.dev/)")
-    exit(1)
+    raise SystemExit(1)
 
 run_shell("mise", "install")
 py_version = run_shell("python3", "-V", capture_output=True, text=True).stdout
