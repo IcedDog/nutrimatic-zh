@@ -1,0 +1,41 @@
+services:
+  nutrimatic:
+    build:
+      context: .
+    image: nutrimatic-zh:local
+    init: true
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${NUTRIMATIC_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: ${NUTRIMATIC_INDEX_DIR:?Set NUTRIMATIC_INDEX_DIR}
+        target: /data
+        read_only: true
+    command:
+      - serve
+      - --index
+      - /data/${NUTRIMATIC_INDEX_FILE:-index.ntri}
+      - --bind
+      - 0.0.0.0:8080
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles:
+      - tunnel
+    init: true
+    restart: unless-stopped
+    depends_on:
+      - nutrimatic
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run

@@ -1,10 +1,5 @@
-Memoize (http://www.eecs.berkeley.edu/~billm/memoize.html)
-is covered by a BSD license; see the comemnt header in memoize.py.
-
-OpenFst (http://www.openfst.org) is covered by the Apache License v2,
-see openfst-1.0/COPYING.
-
-The rest of Nutrimatic is covered by the GPLv3, reproduced below.
+The Rust implementation of Nutrimatic is covered by GPLv3 or later,
+reproduced below. Locally supplied data remains subject to its own license.
 
 =====
 

@@ -1,0 +1,20 @@
+[package]
+name = "nutrimatic-zh"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Unicode-native Chinese corpus index and pattern search"
+
+[lib]
+name = "nutrimatic_zh"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nutrimatic-zh"
+path = "src/main.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+

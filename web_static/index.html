@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="按模式搜索中文语料中的词语和连续片段">
+  <title>Nutrimatic 中文版</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div>
+        <h1>Nutrimatic 中文版</h1>
+        <p><em>有吗？没有！</em></p>
+      </div>
+      <img src="/nutritea-small.jpg" width="72" height="72">
+    </header>
+
+    <form id="search-form" action="/" method="get">
+      <div class="search-row">
+        <label class="sr-only" for="query">查询模式</label>
+        <input id="query" name="q" type="search" size="45" autocomplete="off"
+               autocorrect="off" autocapitalize="off" spellcheck="false"
+               placeholder="例如：.*春.*&amp;.{4}">
+        <button type="submit">搜索</button>
+      </div>
+      <label class="stream-option">
+        <input id="stream-results" type="checkbox" checked>
+        实时显示搜索进度
+      </label>
+    </form>
+
+    <p>在已解析语料的连续汉字片段中匹配模式，常见结果优先显示。</p>
+
+    <section id="search-output" hidden>
+      <p id="status" aria-live="polite"></p>
+      <div id="results"></div>
+    </section>
+
+    <section>
+      <h2>语法</h2>
+      <ul class="syntax-list">
+        <li><code>汉字</code>：字面匹配</li>
+        <li><code>.</code>：任意一个汉字</li>
+        <li><code>[] () | ? * + {m,n}</code>：与正则表达式相同</li>
+        <li><code>表达式&amp;表达式</code>：两边必须同时匹配完整结果</li>
+        <li><code>&lt;内容&gt;</code>：内容可以乱序出现</li>
+        <li><code>@p(...)</code>：拼音；<code>@b(...)</code>：部件；<code>@h(...)</code>：笔画</li>
+        <li><code>@t(...)</code>：相同汉字；<code>@z(...)</code>：在内置词表中补字</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>示例</h2>
+      <ul>
+        <li><a class="example" href="/?q=.*春.*%26.%7B4%7D"><code>.*春.*&amp;.{4}</code></a>：含“春”的四字片段</li>
+        <li><a class="example" href="/?q=%3C天地玄黄%3E"><code>&lt;天地玄黄&gt;</code></a>：四个字任意次序</li>
+        <li><a class="example" href="/?q=@t(A)@t(A)@t(B)@t(B)"><code>@t(A)@t(A)@t(B)@t(B)</code></a>：AABB 结构</li>
+        <li><a class="example" href="/?q=@p(shan3)水"><code>@p(shan3)水</code></a>：首字读 shan 三声</li>
+        <li><a class="example" href="/?q=@b(氵).%7B2%7D"><code>@b(氵).{2}</code></a>：三字且首字含三点水</li>
+        <li><a class="example" href="/?q=@z(.士林)"><code>@z(.士林)</code></a>：补全能与“士林”成词的字</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>更多</h2>
+      <ul>
+        <li><a href="/usage.html">完整使用说明</a>：语法、中文属性和速度说明</li>
+        <li><a href="https://github.com/IcedDog/nutrimatic-zh">源代码</a></li>
+      </ul>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

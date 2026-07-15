@@ -1,11 +1,18 @@
+/target/
+/docs/
+/data/
+/scripts/
+.env
+
+*.ntri
+*.shard.txt
+*.records.tsv
+*.audit.json
+*.partial
+*.partial.*
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+*.swp
 *.tmp
-/build/
-
-# Python
-*.pyc
-__pycache__
-
-# Nutrimatic data
-*.index
-*.xml
-*.xml.bz2
