@@ -14,7 +14,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, IsTerminal, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const HOME_HTML: &str = include_str!("../web_static/index.html");
@@ -700,11 +701,10 @@ fn command_search(arguments: Vec<OsString>) -> AppResult<()> {
         report.results.len(),
         report.visited,
         report.derivative_states,
-        if report.truncated {
-            "，达到计算上限"
-        } else {
-            ""
-        }
+        report
+            .stop_reason
+            .map(|reason| format!("，{}", reason.message()))
+            .unwrap_or_default()
     );
     Ok(())
 }
@@ -754,6 +754,7 @@ fn command_serve(arguments: Vec<OsString>) -> AppResult<()> {
     let state = Arc::new(ServerState {
         index: IndexReader::open(options.required_path("index")?)?,
         search_options: search_options_from_cli(&options)?,
+        search_gate: SearchGate::default(),
     });
     let listener = TcpListener::bind(&bind)?;
     println!("Nutrimatic 中文版正在监听 http://{bind}/");
@@ -787,6 +788,85 @@ fn search_options_from_cli(options: &ParsedOptions) -> io::Result<SearchOptions>
 struct ServerState {
     index: IndexReader,
     search_options: SearchOptions,
+    search_gate: SearchGate,
+}
+
+const MAX_QUEUED_SEARCHES: usize = 32;
+
+#[derive(Default)]
+struct SearchGate {
+    lock: Mutex<()>,
+    in_system: AtomicUsize,
+}
+
+impl SearchGate {
+    fn enqueue(&self) -> Option<SearchTicket<'_>> {
+        let mut current = self.in_system.load(AtomicOrdering::Acquire);
+        loop {
+            if current >= MAX_QUEUED_SEARCHES + 1 {
+                return None;
+            }
+            match self.in_system.compare_exchange_weak(
+                current,
+                current + 1,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(SearchTicket {
+                        gate: self,
+                        ahead: current,
+                        counted: true,
+                    });
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
+struct SearchTicket<'a> {
+    gate: &'a SearchGate,
+    ahead: usize,
+    counted: bool,
+}
+
+impl<'a> SearchTicket<'a> {
+    fn ahead(&self) -> usize {
+        self.ahead
+    }
+
+    fn wait(mut self) -> SearchPermit<'a> {
+        let guard = self
+            .gate
+            .lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.counted = false;
+        SearchPermit {
+            gate: self.gate,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for SearchTicket<'_> {
+    fn drop(&mut self) {
+        if self.counted {
+            self.gate.in_system.fetch_sub(1, AtomicOrdering::AcqRel);
+        }
+    }
+}
+
+struct SearchPermit<'a> {
+    gate: &'a SearchGate,
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl Drop for SearchPermit<'_> {
+    fn drop(&mut self) {
+        self.gate.in_system.fetch_sub(1, AtomicOrdering::AcqRel);
+    }
 }
 
 fn handle_connection(mut stream: TcpStream, state: &ServerState) -> AppResult<()> {
@@ -878,8 +958,16 @@ fn api_search(query_string: &str, state: &ServerState) -> StaticResponse {
         Ok(request) => request,
         Err(response) => return response,
     };
-    let started = Instant::now();
     let query = log_text(&request.query);
+    let Some(ticket) = state.search_gate.enqueue() else {
+        eprintln!("[搜索] 队列已满：{query}");
+        return json_error(429, "搜索队列已满，请稍后重试");
+    };
+    if ticket.ahead() > 0 {
+        eprintln!("[搜索] 排队：{query}（前面 {} 个任务）", ticket.ahead());
+    }
+    let _permit = ticket.wait();
+    let started = Instant::now();
     eprintln!("[搜索] 开始：{query}（上限 {}）", request.options.limit);
     match search(&state.index, &request.program, &request.options) {
         Ok(report) => {
@@ -960,17 +1048,39 @@ fn api_search_stream(
             return Ok(());
         }
     };
-    let started = Instant::now();
     let query = log_text(&request.query);
-    eprintln!(
-        "[搜索] 开始（实时）：{query}（上限 {}）",
-        request.options.limit
-    );
 
     write_stream_headers(stream)?;
     if head_only {
         return Ok(());
     }
+
+    let Some(ticket) = state.search_gate.enqueue() else {
+        eprintln!("[搜索] 队列已满：{query}");
+        let line = format!(
+            "{{\"type\":\"error\",\"error\":{}}}\n",
+            json_string("搜索队列已满，请稍后重试")
+        );
+        write_http_chunk(stream, line.as_bytes())?;
+        finish_http_chunks(stream)?;
+        return Ok(());
+    };
+    if ticket.ahead() > 0 {
+        eprintln!("[搜索] 排队：{query}（前面 {} 个任务）", ticket.ahead());
+        let line = format!("{{\"type\":\"queued\",\"ahead\":{}}}\n", ticket.ahead());
+        if let Err(error) = write_http_chunk(stream, line.as_bytes()) {
+            if is_disconnect_io_error(&error) {
+                return Ok(());
+            }
+            return Err(error.into());
+        }
+    }
+    let _permit = ticket.wait();
+    let started = Instant::now();
+    eprintln!(
+        "[搜索] 开始（实时）：{query}（上限 {}）",
+        request.options.limit
+    );
 
     let mut stream_error = None;
     let result = search_with_progress(
@@ -1054,17 +1164,17 @@ fn log_bad_search_request(query: Option<&str>, message: &str) -> StaticResponse 
 }
 
 fn log_search_complete(query: &str, report: &SearchReport, elapsed: Duration) {
+    let stop = report
+        .stop_reason
+        .map(|reason| format!("，{}", reason.message()))
+        .unwrap_or_default();
     eprintln!(
         "[搜索] 完成：{query}；结果 {}，节点 {}，状态 {}，耗时 {:.3} 秒{}",
         report.results.len(),
         report.visited,
         report.derivative_states,
         elapsed.as_secs_f64(),
-        if report.truncated {
-            "，达到计算上限"
-        } else {
-            ""
-        }
+        stop
     );
 }
 
@@ -1149,6 +1259,7 @@ fn write_response(
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        429 => "Too Many Requests",
         422 => "Unprocessable Content",
         _ => "Error",
     };
@@ -1250,8 +1361,12 @@ fn search_report_json_with_type(event_type: Option<&str>, report: &SearchReport)
     let event_type = event_type
         .map(|value| format!("\"type\":{},", json_string(value)))
         .unwrap_or_default();
+    let stop_reason = report
+        .stop_reason
+        .map(|reason| json_string(reason.code()))
+        .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{{event_type}\"results\":[{results}],\"visited\":{},\"states\":{},\"truncated\":{}}}",
+        "{{{event_type}\"results\":[{results}],\"visited\":{},\"states\":{},\"truncated\":{},\"stop_reason\":{stop_reason}}}",
         report.visited, report.derivative_states, report.truncated
     )
 }
@@ -1431,6 +1546,7 @@ mod tests {
     use crate::index::{IndexMode, TrieWriter};
     use std::io::Cursor;
     use std::net::Shutdown;
+    use std::sync::mpsc;
     use std::thread;
 
     #[test]
@@ -1482,6 +1598,7 @@ mod tests {
         let state = ServerState {
             index: IndexReader::from_bytes(cursor.into_inner()).unwrap(),
             search_options: SearchOptions::default(),
+            search_gate: SearchGate::default(),
         };
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1516,6 +1633,7 @@ mod tests {
         let state = ServerState {
             index: IndexReader::from_bytes(cursor.into_inner()).unwrap(),
             search_options: SearchOptions::default(),
+            search_gate: SearchGate::default(),
         };
         let request = parse_search_request("q=%E4%B8%AD.*&limit=12", &state).unwrap();
         assert_eq!(request.query, "中.*");
@@ -1530,6 +1648,7 @@ mod tests {
         let state = ServerState {
             index: IndexReader::from_bytes(cursor.into_inner()).unwrap(),
             search_options: SearchOptions::default(),
+            search_gate: SearchGate::default(),
         };
         let response = match parse_search_request("q=%E4%B8%AD%5B", &state) {
             Ok(_) => panic!("invalid query unexpectedly parsed"),
@@ -1547,5 +1666,34 @@ mod tests {
         assert!(is_client_disconnect(&error));
         let error = io::Error::new(io::ErrorKind::InvalidData, "bad response");
         assert!(!is_client_disconnect(&error));
+    }
+
+    #[test]
+    fn search_gate_runs_only_one_search_at_a_time() {
+        let gate = Arc::new(SearchGate::default());
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let first_gate = Arc::clone(&gate);
+        let first_tx = acquired_tx.clone();
+        let first = thread::spawn(move || {
+            let permit = first_gate.enqueue().unwrap().wait();
+            first_tx.send(1).unwrap();
+            release_rx.recv().unwrap();
+            drop(permit);
+        });
+        assert_eq!(acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+
+        let second_gate = Arc::clone(&gate);
+        let second = thread::spawn(move || {
+            let permit = second_gate.enqueue().unwrap().wait();
+            acquired_tx.send(2).unwrap();
+            drop(permit);
+        });
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        release_tx.send(()).unwrap();
+        assert_eq!(acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+        first.join().unwrap();
+        second.join().unwrap();
     }
 }

@@ -26,10 +26,14 @@
                placeholder="例如：.*春.*&amp;.{4}">
         <button type="submit">搜索</button>
       </div>
-      <label class="stream-option">
-        <input id="stream-results" type="checkbox" checked>
-        实时显示搜索进度
-      </label>
+      <details class="advanced-settings">
+        <summary>高级设置</summary>
+        <label class="stream-option">
+          <input id="stream-results" type="checkbox">
+          实时显示搜索进度
+        </label>
+        <p>实时模式会定期刷新暂定结果；关闭时只显示最终结果。</p>
+      </details>
     </form>
 
     <p>在已解析语料的连续汉字片段中匹配模式，常见结果优先显示。</p>

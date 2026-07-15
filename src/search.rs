@@ -20,7 +20,29 @@ impl Default for SearchOptions {
         Self {
             limit: 100,
             max_nodes: 1_000_000,
-            max_states: 100_000,
+            max_states: 20_000,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchStopReason {
+    NodeLimit,
+    StateLimit,
+}
+
+impl SearchStopReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NodeLimit => "node_limit",
+            Self::StateLimit => "state_limit",
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::NodeLimit => "达到节点检查上限",
+            Self::StateLimit => "达到查询状态上限",
         }
     }
 }
@@ -37,6 +59,7 @@ pub struct SearchReport {
     pub visited: u64,
     pub derivative_states: usize,
     pub truncated: bool,
+    pub stop_reason: Option<SearchStopReason>,
 }
 
 #[derive(Debug)]
@@ -220,7 +243,6 @@ fn search_internal(
             "max_nodes 必须大于零".to_owned(),
         ));
     }
-
     let mut machine = DerivativeMachine::new(program, options.max_states)?;
     let mut queue = BinaryHeap::new();
     let mut serial = 0_u64;
@@ -231,17 +253,22 @@ fn search_internal(
         state: 0,
         text: String::new(),
     });
-
     // RankedHit orders better hits higher. Reverse therefore keeps the worst
     // retained hit at the top, making bounded top-N replacement O(log N).
     let mut retained: BinaryHeap<Reverse<RankedHit>> = BinaryHeap::new();
     let mut visited = 0_u64;
-    let mut truncated = false;
+    let mut stop_reason = None;
     let mut last_progress = Instant::now();
 
-    while let Some(item) = queue.pop() {
+    'search: loop {
+        if stop_reason.is_some() {
+            break;
+        }
+        let Some(item) = queue.pop() else {
+            break;
+        };
         if visited >= options.max_nodes {
-            truncated = true;
+            stop_reason = Some(SearchStopReason::NodeLimit);
             break;
         }
 
@@ -280,8 +307,14 @@ fn search_internal(
         }
 
         for edge in node.edges {
-            let Some(next_state) = machine.transition(item.state, edge.label)? else {
-                continue;
+            let next_state = match machine.transition(item.state, edge.label) {
+                Ok(Some(next_state)) => next_state,
+                Ok(None) => continue,
+                Err(SearchError::StateLimit { .. }) => {
+                    stop_reason = Some(SearchStopReason::StateLimit);
+                    break 'search;
+                }
+                Err(error) => return Err(error),
             };
             serial = serial.wrapping_add(1);
             let mut text = item.text.clone();
@@ -301,7 +334,7 @@ fn search_internal(
             && let Some(callback) = progress.as_mut()
         {
             let report =
-                search_report_snapshot(&retained, visited, machine.states.len(), truncated);
+                search_report_snapshot(&retained, visited, machine.states.len(), stop_reason);
             if !callback(&report) {
                 break;
             }
@@ -315,7 +348,8 @@ fn search_internal(
         results,
         visited,
         derivative_states: machine.states.len(),
-        truncated,
+        truncated: stop_reason.is_some(),
+        stop_reason,
     })
 }
 
@@ -323,14 +357,15 @@ fn search_report_snapshot(
     retained: &BinaryHeap<Reverse<RankedHit>>,
     visited: u64,
     derivative_states: usize,
-    truncated: bool,
+    stop_reason: Option<SearchStopReason>,
 ) -> SearchReport {
     let results = sorted_results(retained.iter().map(|Reverse(hit)| hit.0.clone()));
     SearchReport {
         results,
         visited,
         derivative_states,
-        truncated,
+        truncated: stop_reason.is_some(),
+        stop_reason,
     }
 }
 
@@ -421,6 +456,20 @@ mod tests {
         };
         let report = search(&index, &program, &options).unwrap();
         assert!(report.truncated);
+        assert_eq!(report.stop_reason, Some(SearchStopReason::NodeLimit));
+    }
+
+    #[test]
+    fn state_limit_returns_partial_report_instead_of_an_error() {
+        let index = sample_index(IndexMode::Records);
+        let program = Program::parse("中.*", None).unwrap();
+        let options = SearchOptions {
+            max_states: 1,
+            ..SearchOptions::default()
+        };
+        let report = search(&index, &program, &options).unwrap();
+        assert!(report.truncated);
+        assert_eq!(report.stop_reason, Some(SearchStopReason::StateLimit));
     }
 
     #[test]

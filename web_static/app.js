@@ -25,7 +25,12 @@ function renderResults(data, complete) {
     row.append(text, score);
     resultsBox.append(row);
   }
-  const tail = data.truncated ? "；已达到计算上限" : "";
+  const stopMessages = {
+    node_limit: "达到节点检查上限",
+    state_limit: "达到查询状态上限"
+  };
+  const stop = data.stop_reason ? stopMessages[data.stop_reason] || "搜索提前停止" : "";
+  const tail = stop ? `；${stop}` : "";
   if (complete) {
     status(`找到 ${data.results.length} 条结果，检查 ${data.visited} 个索引节点${tail}。`);
   } else {
@@ -51,22 +56,6 @@ function responseErrorFromText(response, text) {
   return `服务器返回 HTTP ${response.status}`;
 }
 
-async function responseJson(response) {
-  const text = await response.text();
-  if (!response.ok) throw new Error(responseErrorFromText(response, text));
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error("服务器返回了无法解析的数据");
-  }
-}
-
-async function runBufferedSearch(query, signal) {
-  const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&limit=100`, { signal });
-  const data = await responseJson(response);
-  renderResults(data, true);
-}
-
 function parseStreamEvent(line) {
   try {
     return JSON.parse(line);
@@ -75,7 +64,7 @@ function parseStreamEvent(line) {
   }
 }
 
-async function runStreamingSearch(query, signal) {
+async function runStreamingSearch(query, signal, showProgress) {
   const response = await fetch(`/api/search/stream?q=${encodeURIComponent(query)}&limit=100`, { signal });
   if (!response.ok) throw new Error(await responseError(response));
   if (!response.body) throw new Error("浏览器不支持流式响应");
@@ -94,7 +83,10 @@ async function runStreamingSearch(query, signal) {
       if (!line.trim()) continue;
       const event = parseStreamEvent(line);
       if (event.type === "error") throw new Error(event.error || "搜索失败");
-      if (event.type === "progress") renderResults(event, false);
+      if (event.type === "queued") {
+        status(`正在排队，前面还有 ${event.ahead} 个搜索任务……`);
+      }
+      if (event.type === "progress" && showProgress) renderResults(event, false);
       if (event.type === "complete") {
         renderResults(event, true);
         completed = true;
@@ -106,6 +98,9 @@ async function runStreamingSearch(query, signal) {
   if (buffer.trim()) {
     const event = parseStreamEvent(buffer);
     if (event.type === "error") throw new Error(event.error || "搜索失败");
+    if (event.type === "queued") {
+      status(`正在排队，前面还有 ${event.ahead} 个搜索任务……`);
+    }
     if (event.type === "complete") {
       renderResults(event, true);
       completed = true;
@@ -122,11 +117,7 @@ async function runSearch(query) {
   resultsBox.replaceChildren();
   status("正在搜索……");
   try {
-    if (streamResults.checked) {
-      await runStreamingSearch(query, controller.signal);
-    } else {
-      await runBufferedSearch(query, controller.signal);
-    }
+    await runStreamingSearch(query, controller.signal, streamResults.checked);
   } catch (error) {
     if (error.name !== "AbortError") {
       const message = error instanceof Error ? error.message : String(error);

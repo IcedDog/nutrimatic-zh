@@ -5,6 +5,7 @@ services:
     image: nutrimatic-zh:local
     init: true
     restart: unless-stopped
+    mem_limit: ${NUTRIMATIC_MEMORY_LIMIT:-4g}
     read_only: true
     security_opt:
       - no-new-privileges:true
