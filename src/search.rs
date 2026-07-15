@@ -103,7 +103,15 @@ struct QueueItem {
     serial: u64,
     node_offset: u64,
     state: u32,
-    text: String,
+    path: u32,
+}
+
+const ROOT_PATH: u32 = u32::MAX;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PathNode {
+    parent: u32,
+    character: char,
 }
 
 impl Ord for QueueItem {
@@ -251,8 +259,9 @@ fn search_internal(
         serial,
         node_offset: index.root_offset(),
         state: 0,
-        text: String::new(),
+        path: ROOT_PATH,
     });
+    let mut paths = Vec::<PathNode>::new();
     // RankedHit orders better hits higher. Reverse therefore keeps the worst
     // retained hit at the top, making bounded top-N replacement O(log N).
     let mut retained: BinaryHeap<Reverse<RankedHit>> = BinaryHeap::new();
@@ -288,21 +297,17 @@ fn search_internal(
             }));
         }
 
-        if !item.text.is_empty() && machine.nullable(item.state) {
+        if item.path != ROOT_PATH && machine.nullable(item.state) {
             let score = if index.implicit_prefixes() {
                 node.subtree
             } else {
                 node.terminal
             };
-            if score > 0 && (program.capture_count == 0 || program.matches(&item.text)) {
-                retain_hit(
-                    &mut retained,
-                    options.limit,
-                    SearchHit {
-                        text: item.text.clone(),
-                        score,
-                    },
-                );
+            if score > 0 {
+                let text = path_text(&paths, item.path);
+                if program.capture_count == 0 || program.matches(&text) {
+                    retain_hit(&mut retained, options.limit, SearchHit { text, score });
+                }
             }
         }
 
@@ -317,14 +322,20 @@ fn search_internal(
                 Err(error) => return Err(error),
             };
             serial = serial.wrapping_add(1);
-            let mut text = item.text.clone();
-            text.push(edge.label);
+            let Ok(path) = u32::try_from(paths.len()) else {
+                stop_reason = Some(SearchStopReason::NodeLimit);
+                break 'search;
+            };
+            paths.push(PathNode {
+                parent: item.path,
+                character: edge.label,
+            });
             queue.push(QueueItem {
                 bound: edge.subtree,
                 serial,
                 node_offset: edge.child_offset,
                 state: next_state,
-                text,
+                path,
             });
         }
 
@@ -351,6 +362,17 @@ fn search_internal(
         truncated: stop_reason.is_some(),
         stop_reason,
     })
+}
+
+fn path_text(paths: &[PathNode], mut path: u32) -> String {
+    let mut characters = Vec::new();
+    while path != ROOT_PATH {
+        let node = paths[path as usize];
+        characters.push(node.character);
+        path = node.parent;
+    }
+    characters.reverse();
+    characters.into_iter().collect()
 }
 
 fn search_report_snapshot(
