@@ -74,6 +74,18 @@ docker build -t nutrimatic-zh .
 docker compose up --build -d
 ```
 
+服务端同一时间只执行一个搜索，其余请求依次排队。搜索候选使用共享路径节点，避免为每个
+队列项复制完整字符串。普通查询错误以及节点、状态限制只结束当前请求。程序在 Linux/Docker
+中检测到 RSS 达到配置上限时也只停止当前搜索。Compose 默认配置为：
+
+```dotenv
+NUTRIMATIC_PROGRAM_MEMORY_LIMIT_MIB=4096
+NUTRIMATIC_MEMORY_LIMIT=5g
+```
+
+前者是程序主动停止当前搜索的 RSS 上限，单位为 MiB；后者是 Docker 容器硬上限。默认预留
+约 1GiB，供程序完成停止、返回结果和释放资源。
+
 Compose 中包含可选的 `cloudflared` 服务。Service URL 设置为：
 
 ```text

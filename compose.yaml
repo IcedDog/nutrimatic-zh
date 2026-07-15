@@ -5,10 +5,12 @@ services:
     image: nutrimatic-zh:local
     init: true
     restart: unless-stopped
-    mem_limit: ${NUTRIMATIC_MEMORY_LIMIT:-4g}
+    mem_limit: ${NUTRIMATIC_MEMORY_LIMIT:-5g}
     read_only: true
     security_opt:
       - no-new-privileges:true
+    environment:
+      NUTRIMATIC_PROGRAM_MEMORY_LIMIT_MIB: ${NUTRIMATIC_PROGRAM_MEMORY_LIMIT_MIB:-4096}
     ports:
       - "127.0.0.1:${NUTRIMATIC_PORT:-8080}:8080"
     volumes:

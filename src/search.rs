@@ -6,13 +6,17 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 use std::error::Error;
 use std::fmt;
+use std::fs;
 use std::time::{Duration, Instant};
+
+const DEFAULT_MAX_RESIDENT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct SearchOptions {
     pub limit: usize,
     pub max_nodes: u64,
     pub max_states: usize,
+    pub max_resident_bytes: u64,
 }
 
 impl Default for SearchOptions {
@@ -21,6 +25,7 @@ impl Default for SearchOptions {
             limit: 100,
             max_nodes: 1_000_000,
             max_states: 20_000,
+            max_resident_bytes: DEFAULT_MAX_RESIDENT_BYTES,
         }
     }
 }
@@ -29,6 +34,7 @@ impl Default for SearchOptions {
 pub enum SearchStopReason {
     NodeLimit,
     StateLimit,
+    MemoryLimit,
 }
 
 impl SearchStopReason {
@@ -36,6 +42,7 @@ impl SearchStopReason {
         match self {
             Self::NodeLimit => "node_limit",
             Self::StateLimit => "state_limit",
+            Self::MemoryLimit => "memory_limit",
         }
     }
 
@@ -43,6 +50,7 @@ impl SearchStopReason {
         match self {
             Self::NodeLimit => "达到节点检查上限",
             Self::StateLimit => "达到查询状态上限",
+            Self::MemoryLimit => "达到程序内存上限",
         }
     }
 }
@@ -266,7 +274,8 @@ fn search_internal(
     // retained hit at the top, making bounded top-N replacement O(log N).
     let mut retained: BinaryHeap<Reverse<RankedHit>> = BinaryHeap::new();
     let mut visited = 0_u64;
-    let mut stop_reason = None;
+    let mut stop_reason = resident_memory_limit_reached(options.max_resident_bytes)
+        .then_some(SearchStopReason::MemoryLimit);
     let mut last_progress = Instant::now();
 
     'search: loop {
@@ -289,6 +298,10 @@ fn search_internal(
         }
 
         visited += 1;
+        if visited % 128 == 0 && resident_memory_limit_reached(options.max_resident_bytes) {
+            stop_reason = Some(SearchStopReason::MemoryLimit);
+            break;
+        }
         let node = index.node(item.node_offset)?;
         if node.subtree != item.bound {
             return Err(SearchError::Index(IndexError::InvalidFormat {
@@ -362,6 +375,21 @@ fn search_internal(
         truncated: stop_reason.is_some(),
         stop_reason,
     })
+}
+
+fn resident_memory_limit_reached(limit: u64) -> bool {
+    current_resident_bytes().is_some_and(|resident| resident >= limit)
+}
+
+fn current_resident_bytes() -> Option<u64> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    parse_resident_bytes(&status)
+}
+
+fn parse_resident_bytes(status: &str) -> Option<u64> {
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let kibibytes = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+    kibibytes.checked_mul(1024)
 }
 
 fn path_text(paths: &[PathNode], mut path: u32) -> String {
@@ -492,6 +520,15 @@ mod tests {
         let report = search(&index, &program, &options).unwrap();
         assert!(report.truncated);
         assert_eq!(report.stop_reason, Some(SearchStopReason::StateLimit));
+    }
+
+    #[test]
+    fn resident_memory_limit_is_four_gibibytes() {
+        assert_eq!(DEFAULT_MAX_RESIDENT_BYTES, 4_294_967_296);
+        assert_eq!(
+            parse_resident_bytes("Name:\ttest\nVmRSS:\t4096 kB\n"),
+            Some(4 * 1024 * 1024)
+        );
     }
 
     #[test]

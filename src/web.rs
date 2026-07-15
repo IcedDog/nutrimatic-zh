@@ -8,6 +8,7 @@ use crate::query::Program;
 use crate::search::{SearchOptions, SearchReport, search, search_with_progress};
 
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
@@ -758,6 +759,10 @@ fn command_serve(arguments: Vec<OsString>) -> AppResult<()> {
     });
     let listener = TcpListener::bind(&bind)?;
     println!("Nutrimatic 中文版正在监听 http://{bind}/");
+    println!(
+        "程序内存上限：{} MiB",
+        state.search_options.max_resident_bytes / (1024 * 1024)
+    );
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
@@ -782,7 +787,31 @@ fn search_options_from_cli(options: &ParsedOptions) -> io::Result<SearchOptions>
         limit: options.usize("limit")?.unwrap_or(defaults.limit),
         max_nodes: options.u64("max-nodes")?.unwrap_or(defaults.max_nodes),
         max_states: options.usize("max-states")?.unwrap_or(defaults.max_states),
+        max_resident_bytes: program_memory_limit_from_env(defaults.max_resident_bytes)?,
     })
+}
+
+fn program_memory_limit_from_env(default: u64) -> io::Result<u64> {
+    let Some(value) = env::var_os("NUTRIMATIC_PROGRAM_MEMORY_LIMIT_MIB") else {
+        return Ok(default);
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| invalid_input("NUTRIMATIC_PROGRAM_MEMORY_LIMIT_MIB 必须是 Unicode 整数"))?;
+    parse_program_memory_limit_mib(value)
+}
+
+fn parse_program_memory_limit_mib(value: &str) -> io::Result<u64> {
+    let mib = value
+        .parse::<u64>()
+        .map_err(|_| invalid_input("NUTRIMATIC_PROGRAM_MEMORY_LIMIT_MIB 必须是正整数"))?;
+    if mib == 0 {
+        return Err(invalid_input(
+            "NUTRIMATIC_PROGRAM_MEMORY_LIMIT_MIB 必须大于零",
+        ));
+    }
+    mib.checked_mul(1024 * 1024)
+        .ok_or_else(|| invalid_input("NUTRIMATIC_PROGRAM_MEMORY_LIMIT_MIB 数值过大"))
 }
 
 struct ServerState {
@@ -1570,6 +1599,16 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.usize("limit").unwrap(), Some(12));
         assert_eq!(parsed.positional, [OsString::from("中文")]);
+    }
+
+    #[test]
+    fn program_memory_limit_environment_is_validated() {
+        assert_eq!(
+            parse_program_memory_limit_mib("4096").unwrap(),
+            4 * 1024 * 1024 * 1024
+        );
+        assert!(parse_program_memory_limit_mib("0").is_err());
+        assert!(parse_program_memory_limit_mib("four").is_err());
     }
 
     #[test]

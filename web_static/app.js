@@ -27,7 +27,8 @@ function renderResults(data, complete) {
   }
   const stopMessages = {
     node_limit: "达到节点检查上限",
-    state_limit: "达到查询状态上限"
+    state_limit: "达到查询状态上限",
+    memory_limit: "达到程序内存上限"
   };
   const stop = data.stop_reason ? stopMessages[data.stop_reason] || "搜索提前停止" : "";
   const tail = stop ? `；${stop}` : "";
